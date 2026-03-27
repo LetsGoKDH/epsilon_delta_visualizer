@@ -553,31 +553,42 @@ function getEps() {
 function tx(x,r,W){ return ML+(x-r.xMin)/(r.xMax-r.xMin)*(W-ML-MR); }
 function ty(y,r,H){ return MT+(r.yMax-y)/(r.yMax-r.yMin)*(H-MT-MB); }
 
-/* ─── δ for single x0 (main thread, capped) ─── */
+/* ─── δ for single x0 (multi-scale scan + bisection) ─── */
 function computeDelta(x0, eps, vr) {
   const y0 = safeEval(x0);
   if (y0 === null) return 0;
   const real = isRealMode();
   const hasInf = leftInf || rightInf;
-  const baseScan = (real || hasInf) ? Math.max(Math.abs(x0)*2, 10) : (vr.xMax-vr.xMin);
-  const scanSpan = Math.min(baseScan, 100);
-  const step = scanSpan/500;
   const domMin = (real || leftInf) ? -1e12 : vr.xMin;
   const domMax = (real || rightInf) ?  1e12 : vr.xMax;
-  let dR = scanSpan, dL = scanSpan;
-  for (let i=1; i<=500; i++) {
-    const xr = x0+i*step;
-    if (xr>domMax) break;
-    const yr = safeEval(xr);
-    if (yr===null || Math.abs(yr-y0)>=eps) { dR=Math.max(0,(i-1)*step); break; }
+
+  function findDelta(dir) {
+    var maxDist = dir > 0 ? domMax - x0 : x0 - domMin;
+    if (maxDist <= 0) return 0;
+    var probe = Math.min(eps * 1e-6, maxDist);
+    if (probe < 1e-15) probe = 1e-15;
+    var lastGood = 0;
+    while (probe <= maxDist) {
+      var xn = x0 + dir * probe;
+      var yn = safeEval(xn);
+      if (yn === null || Math.abs(yn - y0) >= eps) {
+        var lo = lastGood, hi = probe;
+        for (var k = 0; k < 60; k++) {
+          var mid = (lo + hi) / 2;
+          if (mid <= lo || mid >= hi) break;
+          var xm = x0 + dir * mid;
+          var ym = safeEval(xm);
+          if (ym === null || Math.abs(ym - y0) >= eps) hi = mid; else lo = mid;
+        }
+        return lo;
+      }
+      lastGood = probe;
+      probe *= 2;
+    }
+    return maxDist;
   }
-  for (let i=1; i<=500; i++) {
-    const xl = x0-i*step;
-    if (xl<domMin) break;
-    const yl = safeEval(xl);
-    if (yl===null || Math.abs(yl-y0)>=eps) { dL=Math.max(0,(i-1)*step); break; }
-  }
-  return Math.min(dL, dR);
+
+  return Math.min(findDelta(+1), findDelta(-1));
 }
 
 /* ─── continuity check (lean: 200 steps, 25 bisect iters) ─── */
@@ -825,7 +836,7 @@ function render() {
   if(lepsEl)  lepsEl.textContent=eps.toFixed(3);
   if(vfx0El)  vfx0El.textContent=y0!==null?y0.toFixed(4):'미정의';
   if(vepsEl)  vepsEl.textContent=eps.toFixed(4);
-  if(vdeltaEl)vdeltaEl.textContent=delta>0?delta.toFixed(5):(y0===null?'미정의':'0');
+  if(vdeltaEl)vdeltaEl.textContent=delta>0?(delta<0.001?delta.toExponential(2):delta.toFixed(5)):(y0===null?'미정의':'0');
   if(!isRealMode()) updateIntervalHint();
 
   ctx.save();
@@ -863,6 +874,10 @@ function render() {
     if (delta>0) {
       var xL=tx(Math.max(x0-delta,vr.xMin),vr,W);
       var xR=tx(Math.min(x0+delta,vr.xMax),vr,W);
+      var xC=tx(x0,vr,W);
+      var minHalf=3;
+      if(xC-xL<minHalf) xL=xC-minHalf;
+      if(xR-xC<minHalf) xR=xC+minHalf;
       ctx.fillStyle='rgba(232,122,91,0.13)';
       ctx.fillRect(xL,MT,xR-xL,H-MT-MB);
       ctx.strokeStyle='rgba(232,122,91,0.6)'; ctx.lineWidth=1; ctx.setLineDash([5,4]);
